@@ -7,9 +7,7 @@ python aes.py -e -i <filename> -o <filename> -k <32 char hex string>
 python aes.py --encrypt --input-file <filename> --output-file <filename> --key <32 char hex string>
 ```
 
-## Textbook Source
-Title: Cryptography and Network Security: Principles and Practice
+## Sources
+Cryptography and Network Security: Principles and Practice, 7th Edition
 
-Edition: 7th Edition
-
-Publisher: Pearson
+Nist Publication on Advanced Encryption Standard (AES)
