@@ -1,5 +1,5 @@
 # pyAES
-AES python implementation using a 128 bit block size
+AES python implementation using a 128 bit key size
 
 Encryption and Decryption are provided
 
