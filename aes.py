@@ -9,8 +9,8 @@ def option_parse() -> (bool, str, str, str):
 	parser = optparse.OptionParser(usage="usage: aes.py [-e|-d] -i <input file> -o <output file> -k <key>")
 	parser.add_option("-e", "--encrypt", action="store_true", dest="mode")
 	parser.add_option("-d", "--decrypt", action="store_false", dest="mode")
-	parser.add_option("-i", "--input-file", action="store", type="string", dest="fin", help="specify source file")
-	parser.add_option("-o", "--output-file", action="store", type="string", dest="fout", help="specify destination file")
+	parser.add_option("-i", "--input-file", action="store", type="string", dest="fin", help="specify input file")
+	parser.add_option("-o", "--output-file", action="store", type="string", dest="fout", help="specify output file")
 	# later will allow for regular passwords sent to hash to get 32 char hex string
 	parser.add_option("-k", "--key", action="store", type="string", dest="key", help="32 character hex string key")
 
@@ -113,7 +113,7 @@ def mix_columns(buff: list) -> list:
 
 def shift_rows(buff: list) -> list:
 	temp = buff.copy()
-	temp[0:4] = rotate_word(temp[0:4], 0)
+	# temp[0:4] = rotate_word(temp[0:4], 0)
 	temp[4:8] = rotate_word(temp[4:8], 1)
 	temp[8:12] = rotate_word(temp[8:12], 2)
 	temp[12:16] = rotate_word(temp[12:16], 3)
@@ -192,8 +192,10 @@ def encrypt(fin: str, fout: str, key: str):
 				for y in range(len(buff_read), 16):
 					buff_write.append(0x00)
 
-			# initialize with adding rkey0 to the buffer
+			# transform buffer into textbook orientation
 			buff_write = text_book_array(buff_write)
+
+			# initialize with adding rkey0 to the buffer
 			buff_write = add_round_key(buff_write, key_schedule[0])
 
 			# rounds 1-9: sub, shift, mix, add
@@ -202,6 +204,79 @@ def encrypt(fin: str, fout: str, key: str):
 				
 			# round 10: sub, shift, add
 			buff_write = add_round_key(shift_rows(substitute_bytes(buff_write)), key_schedule[10])
+			# undo text book array orientation
+			buff_write = text_book_array(buff_write)
+			dst.write(bytearray(buff_write))
+
+
+def inverse_mix_columns(buff: list) -> list:
+	temp = buff.copy()
+	for i in range(4):
+		temp[0 + i] = GF8_mult(buff[0 + i], 0x0e) ^ GF8_mult(buff[4 + i], 0x0b) ^ GF8_mult(buff[8 + i], 0x0d) ^ GF8_mult(buff[12 + i], 0x09)
+		temp[4 + i] = GF8_mult(buff[0 + i], 0x09) ^ GF8_mult(buff[4 + i], 0x0e) ^ GF8_mult(buff[8 + i], 0x0b) ^ GF8_mult(buff[12 + i], 0x0d)
+		temp[8 + i] = GF8_mult(buff[0 + i], 0x0d) ^ GF8_mult(buff[4 + i], 0x09) ^ GF8_mult(buff[8 + i], 0x0e) ^ GF8_mult(buff[12 + i], 0x0b)
+		temp[12 + i] = GF8_mult(buff[0 + i], 0x0b) ^ GF8_mult(buff[4 + i], 0x0d) ^ GF8_mult(buff[8 + i], 0x09) ^ GF8_mult(buff[12 + i], 0x0e)
+	return temp
+
+
+def inverse_substitute_bytes(buff: list) -> list:
+	temp = buff.copy()
+	for i in range(16):
+		temp[i] = lt.inv_sbox[temp[i]]
+	return temp
+
+
+def inverse_shift_rows(buff: list) -> list:
+	temp = buff.copy()
+	# temp[0:4] = rotate_word(temp[0:4], 0)
+	temp[4:8] = rotate_word(temp[4:8], 3)
+	temp[8:12] = rotate_word(temp[8:12], 2)
+	temp[12:16] = rotate_word(temp[12:16], 1)
+	return temp
+
+
+def decrypt(fin: str, fout: str, key: str):
+
+	file_size = os.path.getsize(fin)
+	if (file_size == 0):
+		print ("Size of input file is 0 bytes")
+		exit()
+	else:
+		# assuming file encrypted with this encryption tool, it will be a multiple of 16
+		buff_count = int(file_size / 16)
+
+	# separate the 32 char hex string into array of bytes
+	key = [int(x, 16) for x in re.findall("..", key)]
+
+	key_schedule = key_expansion(key)
+
+	# key_copy = key_schedule.copy()
+	# print('\n'.join([' '.join(['{:4}'.format(hex(item)) for item in row]) 
+	# 	for row in key_copy]))
+
+	with open(fin, "rb") as src, open(fout, "wb") as dst:
+		
+		for i in range(buff_count):
+			
+			buff_read = src.read(16)
+			buff_write = []
+			
+			for x in range(16):
+				buff_write.append(int(buff_read[x]))
+			
+			# transform buffer into textbook orientation
+			buff_write = text_book_array(buff_write)
+
+			# initialize with adding rkey10 to the buffer
+			buff_write = add_round_key(buff_write, key_schedule[10])
+
+			# rounds 1-9: shift, sub, add, mix
+			for j in range(9, 0, -1):
+				buff_write = inverse_mix_columns(add_round_key(inverse_substitute_bytes(inverse_shift_rows(buff_write)), key_schedule[j]))
+				
+			# round 10: shift, sub, add
+			buff_write = add_round_key(inverse_substitute_bytes(inverse_shift_rows(buff_write)), key_schedule[0])
+
 			# undo text book array orientation
 			buff_write = text_book_array(buff_write)
 			dst.write(bytearray(buff_write))
@@ -216,7 +291,7 @@ def main():
 	if mode:
 		encrypt(fin, fout, key)
 	else:
-		print("decrypt not ready")
+		decrypt(fin, fout, key)
 
 
 if __name__ == "__main__":
