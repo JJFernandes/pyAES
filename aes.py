@@ -2,7 +2,7 @@ import os
 import optparse
 import re
 import math
-
+from hashlib import md5
 
 # round constants
 rcon = [0x00, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36]
@@ -50,10 +50,9 @@ def option_parse() -> (bool, str, str, str):
 	parser = optparse.OptionParser(usage="usage: aes.py [-e|-d] -i <input file> -o <output file> -k <key>")
 	parser.add_option("-e", "--encrypt", action="store_true", dest="mode")
 	parser.add_option("-d", "--decrypt", action="store_false", dest="mode")
-	parser.add_option("-i", "--input-file", action="store", type="string", dest="fin", help="specify input file")
-	parser.add_option("-o", "--output-file", action="store", type="string", dest="fout", help="specify output file")
-	# later will allow for regular passwords sent to hash to get 32 char hex string
-	parser.add_option("-k", "--key", action="store", type="string", dest="key", help="32 character hex string key")
+	parser.add_option("-i", "--input-file", action="store", type="string", dest="fin", help="input file name")
+	parser.add_option("-o", "--output-file", action="store", type="string", dest="fout", help="output file name")
+	parser.add_option("-k", "--key", action="store", type="string", dest="key", help="file password")
 
 	(options, args) = parser.parse_args()
 	mode = options.mode
@@ -65,11 +64,9 @@ def option_parse() -> (bool, str, str, str):
 	if (mode is None) | (fin is None) | (fout is None) | (key is None):
 		print(parser.usage)
 		exit()
-	elif (not re.search(re.compile(r'^[a-fA-F0-9]{32}$'), key)):
-		print("key given is not a 32 character hex string")
-		exit()
 
-	return mode, fin, fout, key
+	# using md5 since it returns a 128 bit output.
+	return mode, os.path.abspath(fin), os.path.abspath(fout), md5(key.encode()).hexdigest()
 
 
 def rotate_word(array: list, num: int) -> list:
@@ -117,7 +114,7 @@ def key_expansion(key: list) -> list:
 
     for i in range(11):
         expanded_key[i] = words[4 * i] + words[4 * i + 1] + words[4 * i + 2] + words[4 * i + 3]
-        expanded_key[i] = text_book_array(expanded_key[i])
+        expanded_key[i] = aes_state_array_orientation(expanded_key[i])
 
     return expanded_key
 
@@ -127,7 +124,7 @@ def add_round_key(buff: list, rkey: list) -> list:
 
 
 # galois field GF(2^8) multiplication
-def GF8_mult(num: int, mul: int) -> int:
+def galois_mul(num: int, mul: int) -> int:
     product = 0
     for i in range(8):
         if mul & 1:
@@ -145,10 +142,10 @@ def GF8_mult(num: int, mul: int) -> int:
 def mix_columns(buff: list) -> list:
 	temp = buff.copy()
 	for i in range(4):
-		temp[0 + i] = GF8_mult(buff[0 + i], 0x02) ^ GF8_mult(buff[4 + i], 0x03) ^ buff[8 + i] ^ buff[12 + i]
-		temp[4 + i] = buff[0 + i] ^ GF8_mult(buff[4 + i], 0x02) ^ GF8_mult(buff[8 + i], 0x03) ^ buff[12 + i]
-		temp[8 + i] = buff[0 + i] ^ buff[4 + i] ^ GF8_mult(buff[8 + i], 0x02) ^ GF8_mult(buff[12 + i], 0x03)
-		temp[12 + i] = GF8_mult(buff[0 + i], 0x03) ^ buff[4 + i] ^ buff[8 + i] ^ GF8_mult(buff[12 + i], 0x02)
+		temp[0 + i] = galois_mul(buff[0 + i], 0x02) ^ galois_mul(buff[4 + i], 0x03) ^ buff[8 + i] ^ buff[12 + i]
+		temp[4 + i] = buff[0 + i] ^ galois_mul(buff[4 + i], 0x02) ^ galois_mul(buff[8 + i], 0x03) ^ buff[12 + i]
+		temp[8 + i] = buff[0 + i] ^ buff[4 + i] ^ galois_mul(buff[8 + i], 0x02) ^ galois_mul(buff[12 + i], 0x03)
+		temp[12 + i] = galois_mul(buff[0 + i], 0x03) ^ buff[4 + i] ^ buff[8 + i] ^ galois_mul(buff[12 + i], 0x02)
 	return temp
 
 
@@ -168,16 +165,15 @@ def substitute_bytes(buff: list) -> list:
 	return temp
 
 
-# patch function to modify buffer to match order of textbook example
-# my functions were written based on textbook orientation
-# and my lists are 1D instead of 2D
+# modify read buffer to aes state array orientation
+# looks bad because I am using 1d array instead of 2d
 # example buffer on read:
-# 01 23 45 67		 01 89 fe 76	
-# 89 ab cd ef	>>>  23 ab dc 54
-# fe dc ba 98		 45 cd ba 32
-# 76 54 32 10		 67 ef 98 10
+# b0  b1  b2  b3		b0  b4  b8  b12
+# b4  b5  b6  b7		b1  b5  b9  b13
+# b8  b9  b10 b11	->	b2  b6  b10 b14
+# b12 b13 b14 b15		b3  b7  b11 b15
 # calling the function again undos itself
-def text_book_array(buff: list) -> list:
+def aes_state_array_orientation(buff: list) -> list:
 	temp = buff.copy()
 
 	temp[0] = buff[0]
@@ -233,8 +229,8 @@ def encrypt(fin: str, fout: str, key: str):
 				for y in range(len(buff_read), 16):
 					buff_write.append(0x00)
 
-			# transform buffer into textbook orientation
-			buff_write = text_book_array(buff_write)
+			# transform buffer into aes state array orientation
+			buff_write = aes_state_array_orientation(buff_write)
 
 			# initialize with adding rkey0 to the buffer
 			buff_write = add_round_key(buff_write, key_schedule[0])
@@ -246,17 +242,17 @@ def encrypt(fin: str, fout: str, key: str):
 			# round 10: sub, shift, add
 			buff_write = add_round_key(shift_rows(substitute_bytes(buff_write)), key_schedule[10])
 			# undo text book array orientation
-			buff_write = text_book_array(buff_write)
+			buff_write = aes_state_array_orientation(buff_write)
 			dst.write(bytearray(buff_write))
 
 
 def inverse_mix_columns(buff: list) -> list:
 	temp = buff.copy()
 	for i in range(4):
-		temp[0 + i] = GF8_mult(buff[0 + i], 0x0e) ^ GF8_mult(buff[4 + i], 0x0b) ^ GF8_mult(buff[8 + i], 0x0d) ^ GF8_mult(buff[12 + i], 0x09)
-		temp[4 + i] = GF8_mult(buff[0 + i], 0x09) ^ GF8_mult(buff[4 + i], 0x0e) ^ GF8_mult(buff[8 + i], 0x0b) ^ GF8_mult(buff[12 + i], 0x0d)
-		temp[8 + i] = GF8_mult(buff[0 + i], 0x0d) ^ GF8_mult(buff[4 + i], 0x09) ^ GF8_mult(buff[8 + i], 0x0e) ^ GF8_mult(buff[12 + i], 0x0b)
-		temp[12 + i] = GF8_mult(buff[0 + i], 0x0b) ^ GF8_mult(buff[4 + i], 0x0d) ^ GF8_mult(buff[8 + i], 0x09) ^ GF8_mult(buff[12 + i], 0x0e)
+		temp[0 + i] = galois_mul(buff[0 + i], 0x0e) ^ galois_mul(buff[4 + i], 0x0b) ^ galois_mul(buff[8 + i], 0x0d) ^ galois_mul(buff[12 + i], 0x09)
+		temp[4 + i] = galois_mul(buff[0 + i], 0x09) ^ galois_mul(buff[4 + i], 0x0e) ^ galois_mul(buff[8 + i], 0x0b) ^ galois_mul(buff[12 + i], 0x0d)
+		temp[8 + i] = galois_mul(buff[0 + i], 0x0d) ^ galois_mul(buff[4 + i], 0x09) ^ galois_mul(buff[8 + i], 0x0e) ^ galois_mul(buff[12 + i], 0x0b)
+		temp[12 + i] = galois_mul(buff[0 + i], 0x0b) ^ galois_mul(buff[4 + i], 0x0d) ^ galois_mul(buff[8 + i], 0x09) ^ galois_mul(buff[12 + i], 0x0e)
 	return temp
 
 
@@ -291,10 +287,6 @@ def decrypt(fin: str, fout: str, key: str):
 
 	key_schedule = key_expansion(key)
 
-	# key_copy = key_schedule.copy()
-	# print('\n'.join([' '.join(['{:4}'.format(hex(item)) for item in row]) 
-	# 	for row in key_copy]))
-
 	with open(fin, "rb") as src, open(fout, "wb") as dst:
 		
 		for i in range(buff_count):
@@ -305,8 +297,8 @@ def decrypt(fin: str, fout: str, key: str):
 			for x in range(16):
 				buff_write.append(int(buff_read[x]))
 			
-			# transform buffer into textbook orientation
-			buff_write = text_book_array(buff_write)
+			# transform buffer into aes state array orientation
+			buff_write = aes_state_array_orientation(buff_write)
 
 			# initialize with adding rkey10 to the buffer
 			buff_write = add_round_key(buff_write, key_schedule[10])
@@ -319,15 +311,12 @@ def decrypt(fin: str, fout: str, key: str):
 			buff_write = add_round_key(inverse_substitute_bytes(inverse_shift_rows(buff_write)), key_schedule[0])
 
 			# undo text book array orientation
-			buff_write = text_book_array(buff_write)
+			buff_write = aes_state_array_orientation(buff_write)
 			dst.write(bytearray(buff_write))
 
 
 def main():
 	mode, fin, fout, key = option_parse()
-
-	fin = os.path.abspath(fin)
-	fout = os.path.abspath(fout)
 
 	if mode:
 		encrypt(fin, fout, key)
