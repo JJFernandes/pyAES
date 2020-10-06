@@ -1,11 +1,12 @@
 # pyAES
 Python implementation of AES-128-CBC encryption and decryption
 
-Currently working on changing decryption to CBC mode as well.
+Currently either encrypting or decrypting wrong after change from ECB -> CBC
 
 # Usage
 ```
 python aes.py --encrypt -in <file-in> --out <file-out> --key <key string> --iv <iv string>
+python aes.py --decrypt -in <file-in> --out <file-out> --key <key string> --iv <iv string>
 ```
 Both the key and iv string should be 32 hexidecimal characters long for a 128 bit block size.
 
