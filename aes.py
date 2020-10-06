@@ -2,7 +2,6 @@ import os
 import optparse
 import re
 import math
-from hashlib import md5
 
 # round constants
 rcon = [0x00, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36]
@@ -48,25 +47,31 @@ inv_sbox = \
 
 def option_parse() -> (bool, str, str, str):
 	parser = optparse.OptionParser(usage="usage: aes.py [-e|-d] -i <input file> -o <output file> -k <key>")
-	parser.add_option("-e", "--encrypt", action="store_true", dest="mode")
-	parser.add_option("-d", "--decrypt", action="store_false", dest="mode")
-	parser.add_option("-i", "--input-file", action="store", type="string", dest="fin", help="input file name")
-	parser.add_option("-o", "--output-file", action="store", type="string", dest="fout", help="output file name")
-	parser.add_option("-k", "--key", action="store", type="string", dest="key", help="file password")
+	parser.add_option("--encrypt", action="store_true", dest="mode")
+	parser.add_option("--decrypt", action="store_false", dest="mode")
+	parser.add_option("--in", action="store", type="string", dest="fin", help="input file name")
+	parser.add_option("--out", action="store", type="string", dest="fout", help="output file name")
+	parser.add_option("--key", action="store", type="string", dest="key", help="key: 16 byte hex string")
+	parser.add_option("--iv", action="store", type="string", dest="iv", help="initialization vector: 16 byte hex string")
 
 	(options, args) = parser.parse_args()
 	mode = options.mode
-	fin = options.fin
-	fout = options.fout
+	fin = os.path.abspath(options.fin)
+	fout = os.path.abspath(options.fout)
 	key = options.key
+	iv = options.iv
 
-	# requiring that the input file be named so I dont have to deal with it
-	if (mode is None) | (fin is None) | (fout is None) | (key is None):
+	if (mode is None) | (fin is None) | (fout is None) | (key is None) | (iv is None):
 		print(parser.usage)
 		exit()
+	elif (not re.search(re.compile(r'^[a-fA-F0-9]{32}$'), key)):
+		print("key given is not a 16 byte hex string")
+		exit()
+	elif (not re.search(re.compile(r'^[a-fA-F0-9]{32}$'), iv)):
+		print("iv given is not a 16 byte hex string")
+		exit()
 
-	# using md5 since it returns a 128 bit output.
-	return mode, os.path.abspath(fin), os.path.abspath(fout), md5(key.encode()).hexdigest()
+	return mode, fin, fout, key, iv
 
 
 def rotate_word(array: list, num: int) -> list:
@@ -120,6 +125,7 @@ def key_expansion(key: list) -> list:
 
 
 def add_round_key(buff: list, rkey: list) -> list:
+	
 	return xor_list_with_list(buff, rkey)
 
 
@@ -196,7 +202,39 @@ def aes_state_array_orientation(buff: list) -> list:
 	return temp
 
 
-def encrypt(fin: str, fout: str, key: str):
+def pad_block(block_in: list) -> list:
+
+	block_out = []
+
+	if ( len(block_in) == 16 ):
+		for x in range(16):
+			block_out.append(int(block_in[x]))
+	# if current buffer is < 16 bytes, pad with zeroes
+	elif ( len(block_in) < 16 ):
+		for x in range(len(block_in)):
+			block_out.append(int(block_in[x]))
+		for y in range(len(block_in), 16):
+			block_out.append(0x0)
+
+	return block_out
+
+
+def encrypt_10rounds(block_in: list, schedule: list) -> list:
+
+	# initialize with adding rkey0 to the buffer
+	block_out = add_round_key(block_in, schedule[0])
+
+	# rounds 1-9: sub, shift, mix, add
+	for j in range(1, 10):
+		block_out = add_round_key(mix_columns(shift_rows(substitute_bytes(block_out))), schedule[j])
+				
+	# round 10: sub, shift, add
+		block_out = add_round_key(shift_rows(substitute_bytes(block_out)), schedule[10])
+
+	return block_out
+
+
+def encrypt(fin: str, fout: str, key: str, iv: str):
 
 	file_size = os.path.getsize(fin)
 	if (file_size == 0):
@@ -207,43 +245,34 @@ def encrypt(fin: str, fout: str, key: str):
 	elif (file_size % 16 != 0):
 		buff_count = int(math.floor(file_size / 16)) + 1
 
-	# separate the 32 char hex string into array of bytes
+	# separate the 16 byte hex string into array of bytes
 	key = [int(x, 16) for x in re.findall("..", key)]
-
+	
 	key_schedule = key_expansion(key)
 
+	iv = aes_state_array_orientation([int(x, 16) for x in re.findall("..", iv)])
+
 	with open(fin, "rb") as src, open(fout, "wb") as dst:
+
+		plainblock_0 = src.read(16)
+		cipherblock = xor_list_with_list(aes_state_array_orientation(pad_block(plainblock_0)), iv)
+
+		cipherblock = encrypt_10rounds(cipherblock, key_schedule)
+
+		# undo text book array orientation and write to dst file
+		cipherblock = aes_state_array_orientation(cipherblock)
+		dst.write(bytearray(cipherblock))
 		
-		for i in range(buff_count):
+		for i in range(1, buff_count):
 			
-			buff_read = src.read(16)
-			buff_write = []
+			plainblock = src.read(16)
 			
-			if ( len(buff_read) == 16 ):
-				for x in range(16):
-					buff_write.append(int(buff_read[x]))
-			# if current buffer is < 16 bytes, pad with zeroes
-			elif ( len(buff_read) < 16 ):
-				for x in range(len(buff_read)):
-					buff_write.append(int(buff_read[x]))
-				for y in range(len(buff_read), 16):
-					buff_write.append(0x00)
+			cipherblock = xor_list_with_list(aes_state_array_orientation(pad_block(plainblock)), cipherblock)
 
-			# transform buffer into aes state array orientation
-			buff_write = aes_state_array_orientation(buff_write)
+			cipherblock = encrypt_10rounds(cipherblock, key_schedule)
 
-			# initialize with adding rkey0 to the buffer
-			buff_write = add_round_key(buff_write, key_schedule[0])
-
-			# rounds 1-9: sub, shift, mix, add
-			for j in range(1, 10):
-				buff_write = add_round_key(mix_columns(shift_rows(substitute_bytes(buff_write))), key_schedule[j])
-				
-			# round 10: sub, shift, add
-			buff_write = add_round_key(shift_rows(substitute_bytes(buff_write)), key_schedule[10])
-			# undo text book array orientation
-			buff_write = aes_state_array_orientation(buff_write)
-			dst.write(bytearray(buff_write))
+			cipherblock = aes_state_array_orientation(cipherblock)
+			dst.write(bytearray(cipherblock))
 
 
 def inverse_mix_columns(buff: list) -> list:
@@ -291,37 +320,37 @@ def decrypt(fin: str, fout: str, key: str):
 		
 		for i in range(buff_count):
 			
-			buff_read = src.read(16)
-			buff_write = []
+			cipherblock = src.read(16)
+			plainblock = []
 			
 			for x in range(16):
-				buff_write.append(int(buff_read[x]))
+				plainblock.append(int(cipherblock[x]))
 			
 			# transform buffer into aes state array orientation
-			buff_write = aes_state_array_orientation(buff_write)
+			plainblock = aes_state_array_orientation(plainblock)
 
 			# initialize with adding rkey10 to the buffer
-			buff_write = add_round_key(buff_write, key_schedule[10])
+			plainblock = add_round_key(plainblock, key_schedule[10])
 
 			# rounds 1-9: shift, sub, add, mix
 			for j in range(9, 0, -1):
-				buff_write = inverse_mix_columns(add_round_key(inverse_substitute_bytes(inverse_shift_rows(buff_write)), key_schedule[j]))
+				plainblock = inverse_mix_columns(add_round_key(inverse_substitute_bytes(inverse_shift_rows(plainblock)), key_schedule[j]))
 				
 			# round 10: shift, sub, add
-			buff_write = add_round_key(inverse_substitute_bytes(inverse_shift_rows(buff_write)), key_schedule[0])
+			plainblock = add_round_key(inverse_substitute_bytes(inverse_shift_rows(plainblock)), key_schedule[0])
 
 			# undo text book array orientation
-			buff_write = aes_state_array_orientation(buff_write)
-			dst.write(bytearray(buff_write))
+			plainblock = aes_state_array_orientation(plainblock)
+			dst.write(bytearray(plainblock))
 
 
 def main():
-	mode, fin, fout, key = option_parse()
+	mode, fin, fout, key, iv = option_parse()
 
 	if mode:
-		encrypt(fin, fout, key)
+		encrypt(fin, fout, key, iv)
 	else:
-		decrypt(fin, fout, key)
+		decrypt(fin, fout, key, iv)
 
 
 if __name__ == "__main__":
