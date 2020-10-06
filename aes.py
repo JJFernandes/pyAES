@@ -209,7 +209,6 @@ def pad_block(block_in: list) -> list:
 	if ( len(block_in) == 16 ):
 		for x in range(16):
 			block_out.append(int(block_in[x]))
-	# if current buffer is < 16 bytes, pad with zeroes
 	elif ( len(block_in) < 16 ):
 		for x in range(len(block_in)):
 			block_out.append(int(block_in[x]))
@@ -245,34 +244,26 @@ def encrypt(fin: str, fout: str, key: str, iv: str):
 	elif (file_size % 16 != 0):
 		buff_count = int(math.floor(file_size / 16)) + 1
 
-	# separate the 16 byte hex string into array of bytes
+	# separate the 16 byte hex string into array of ints
 	key = [int(x, 16) for x in re.findall("..", key)]
 	
 	key_schedule = key_expansion(key)
 
-	iv = aes_state_array_orientation([int(x, 16) for x in re.findall("..", iv)])
-
+	cipherblock_prev = aes_state_array_orientation([int(x, 16) for x in re.findall("..", iv)])
+	
 	with open(fin, "rb") as src, open(fout, "wb") as dst:
 
-		plainblock_0 = src.read(16)
-		cipherblock = xor_list_with_list(aes_state_array_orientation(pad_block(plainblock_0)), iv)
-
-		cipherblock = encrypt_10rounds(cipherblock, key_schedule)
-
-		# undo text book array orientation and write to dst file
-		cipherblock = aes_state_array_orientation(cipherblock)
-		dst.write(bytearray(cipherblock))
-		
-		for i in range(1, buff_count):
+		for i in range(buff_count):
 			
-			plainblock = src.read(16)
+			plainblock_init = src.read(16)
+			plainblock = aes_state_array_orientation(pad_block(plainblock_init))
+			plainblock = xor_list_with_list(plainblock, cipherblock_prev)
 			
-			cipherblock = xor_list_with_list(aes_state_array_orientation(pad_block(plainblock)), cipherblock)
-
-			cipherblock = encrypt_10rounds(cipherblock, key_schedule)
-
-			cipherblock = aes_state_array_orientation(cipherblock)
-			dst.write(bytearray(cipherblock))
+			cipherblock = encrypt_10rounds(plainblock, key_schedule)
+			cipherblock_prev = cipherblock.copy()
+			
+			cipherblock_write = aes_state_array_orientation(cipherblock)
+			dst.write(bytearray(cipherblock_write))
 
 
 def inverse_mix_columns(buff: list) -> list:
@@ -301,47 +292,56 @@ def inverse_shift_rows(buff: list) -> list:
 	return temp
 
 
-def decrypt(fin: str, fout: str, key: str):
+def decrypt_10rounds(block_in: list, schedule: list) -> list:
+
+	# initialize with adding rkey10 to the buffer
+	block_out = add_round_key(block_in, schedule[10])
+
+	# rounds 1-9: shift, sub, add, mix
+	for j in range(9, 0, -1):
+		block_out = inverse_mix_columns(add_round_key(inverse_substitute_bytes(inverse_shift_rows(block_out)), schedule[j]))
+				
+	# round 10: shift, sub, add
+		block_out = add_round_key(inverse_substitute_bytes(inverse_shift_rows(block_out)), schedule[0])
+
+	return block_out
+
+
+def decrypt(fin: str, fout: str, key: str, iv: str):
 
 	file_size = os.path.getsize(fin)
 	if (file_size == 0):
 		print ("Size of input file is 0 bytes")
 		exit()
 	else:
-		# assuming file encrypted with this encryption tool, it will be a multiple of 16
+		# CBC requires padding so it will be a multiple of 16
 		buff_count = int(file_size / 16)
 
-	# separate the 32 char hex string into array of bytes
+	# separate the 32 char hex string into array of ints
 	key = [int(x, 16) for x in re.findall("..", key)]
 
 	key_schedule = key_expansion(key)
 
+	cipherblock_prev = aes_state_array_orientation([int(x, 16) for x in re.findall("..", iv)])
+
 	with open(fin, "rb") as src, open(fout, "wb") as dst:
 		
 		for i in range(buff_count):
-			
-			cipherblock = src.read(16)
-			plainblock = []
-			
+
+			cipherblock_init = src.read(16)
+			cipherblock = []
 			for x in range(16):
-				plainblock.append(int(cipherblock[x]))
-			
-			# transform buffer into aes state array orientation
-			plainblock = aes_state_array_orientation(plainblock)
+				cipherblock.append(int(cipherblock_init[x]))
 
-			# initialize with adding rkey10 to the buffer
-			plainblock = add_round_key(plainblock, key_schedule[10])
+			cipherblock = aes_state_array_orientation(cipherblock)
 
-			# rounds 1-9: shift, sub, add, mix
-			for j in range(9, 0, -1):
-				plainblock = inverse_mix_columns(add_round_key(inverse_substitute_bytes(inverse_shift_rows(plainblock)), key_schedule[j]))
-				
-			# round 10: shift, sub, add
-			plainblock = add_round_key(inverse_substitute_bytes(inverse_shift_rows(plainblock)), key_schedule[0])
+			plainblock = decrypt_10rounds(cipherblock, key_schedule)
+			plainblock = xor_list_with_list(plainblock, cipherblock_prev)
 
-			# undo text book array orientation
-			plainblock = aes_state_array_orientation(plainblock)
-			dst.write(bytearray(plainblock))
+			cipherblock_prev = cipherblock.copy()
+
+			plainblock_write = aes_state_array_orientation(plainblock)
+			dst.write(bytearray(plainblock_write))
 
 
 def main():
