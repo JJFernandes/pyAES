@@ -1,6 +1,7 @@
 # pyAES
 Python implementation of AES-128-CBC encryption and decryption
 
+Currently working on changing decryption to CBC mode as well.
 
 # Usage
 ```
